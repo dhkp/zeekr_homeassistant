@@ -36,6 +36,11 @@ This is a custom integration for Zeekr Electric Vehicles for Home Assistant. It 
 
 - **Account**: Create a new account and share your car with the new account to avoid "The account is currently logged in elsewhere"
 - **Secrets**: Get the secrets by decompiling the Android app.
+- **Display**: Use vehicle-status-card for a good quality dashboard.
+
+## Known Issues
+
+- If your car is RHD, the tire sensor data will be listed for the wrong side of the vehicle
 
 ## Issues
 
