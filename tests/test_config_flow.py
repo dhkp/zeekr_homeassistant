@@ -83,16 +83,16 @@ def test_validation_logic():
     # 16 bytes base64 encoded is approx 24 chars
     # Requirement: "length 16" string, base64 encoded.
 
-    valid_16_b64 = "AAAAAAAAAAAAAAAA" # 16 chars
-    valid_32_b64_exact = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" # 32 chars
+    valid_16_b64 = "AAAAAAAAAAAAAAAA"  # 16 chars
+    valid_32_b64_exact = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"  # 32 chars
 
     valid_input = {
-        CONF_HMAC_ACCESS_KEY: valid_32_b64_exact, # >= 32
-        CONF_HMAC_SECRET_KEY: valid_32_b64_exact, # >= 32
-        CONF_PASSWORD_PUBLIC_KEY: valid_200_b64, # >= 200
-        CONF_PROD_SECRET: valid_32_b64_exact, # == 32
-        CONF_VIN_KEY: valid_16_b64, # == 16
-        CONF_VIN_IV: valid_16_b64, # == 16
+        CONF_HMAC_ACCESS_KEY: valid_32_b64_exact,  # >= 32
+        CONF_HMAC_SECRET_KEY: valid_32_b64_exact,  # >= 32
+        CONF_PASSWORD_PUBLIC_KEY: valid_200_b64,  # >= 200
+        CONF_PROD_SECRET: valid_32_b64_exact,  # == 32
+        CONF_VIN_KEY: valid_16_b64,  # == 16
+        CONF_VIN_IV: valid_16_b64,  # == 16
     }
 
     assert validate_input(valid_input) is None
