@@ -1,7 +1,6 @@
 """Adds config flow for Zeekr EV API Integration."""
 
 import logging
-import re
 from typing import Dict, Any, Optional
 
 import voluptuous as vol
@@ -31,13 +30,6 @@ from .utils import get_zeekr_client_class
 _LOGGER = logging.getLogger(__name__)
 
 
-def is_base64(s: str) -> bool:
-    """Check if string is base64 encoded."""
-    if not s:
-        return False
-    # Base64 pattern
-    pattern = r"^[A-Za-z0-9+/]*={0,2}$"
-    return bool(re.match(pattern, s)) and (len(s) % 4 == 0)
 
 
 class ZeekrEVAPIFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call-arg]
@@ -90,19 +82,20 @@ class ZeekrEVAPIFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):  # type: 
     def _validate_input(self, user_input: Dict[str, Any]) -> Optional[str]:
         """Validate user input format and length."""
         # Helper to strip and check
-        def check_field(key, min_len=None, exact_len=None):
+        def check_field(key, min_len=None, allowed_lens=None):
             val = user_input.get(key, "").strip()
             # Update user_input with stripped value
             user_input[key] = val
 
-            if not is_base64(val):
-                return f"invalid_base64_{key}"
+            if not val:
+                return None  # Optional fields may be empty
 
             if min_len and len(val) < min_len:
                 return f"invalid_length_min_{min_len}_{key}"
 
-            if exact_len and len(val) != exact_len:
-                return f"invalid_length_exact_{exact_len}_{key}"
+            if allowed_lens and len(val) not in allowed_lens:
+                return f"invalid_length_{key}"
+
             return None
 
         # Validate HMAC Access Key (>= 32)
@@ -117,16 +110,16 @@ class ZeekrEVAPIFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):  # type: 
         if err := check_field(CONF_PASSWORD_PUBLIC_KEY, min_len=200):
             return err
 
-        # Validate Prod Secret (Exact 32)
-        if err := check_field(CONF_PROD_SECRET, exact_len=32):
+        # Validate Prod Secret: 32 chars (EU hex) or 40 chars (other encodings)
+        if err := check_field(CONF_PROD_SECRET, allowed_lens={32, 40}):
             return err
 
-        # Validate VIN Key (Exact 16)
-        if err := check_field(CONF_VIN_KEY, exact_len=16):
+        # Validate VIN Key: 16 chars (ASCII) or 32 chars (hex)
+        if err := check_field(CONF_VIN_KEY, allowed_lens={16, 32}):
             return err
 
-        # Validate VIN IV (Exact 16)
-        if err := check_field(CONF_VIN_IV, exact_len=16):
+        # Validate VIN IV: 16 chars (ASCII) or 32 chars (hex)
+        if err := check_field(CONF_VIN_IV, allowed_lens={16, 32}):
             return err
 
         return None
@@ -271,24 +264,20 @@ class ZeekrEVAPIOptionsFlowHandler(config_entries.OptionsFlow):
             # Validate credentials if changed
 
             # Helper for validation in options flow
-            def check_field(key, min_len=None, exact_len=None):
+            def check_field(key, min_len=None, allowed_lens=None):
                 val = user_input.get(key, "").strip()
                 # Update user_input with stripped value
                 user_input[key] = val
 
-                # If field is not present or unchanged (masked), we might need to handle it.
-                # But here we assume if it's provided in user_input, we validate it.
-                # However, if it's a re-auth/options flow, empty fields might mean "no change"?
-                # But the schema sets defaults from existing config.
-
-                if not is_base64(val):
-                    return f"invalid_base64_{key}"
+                if not val:
+                    return None  # Optional fields may be empty
 
                 if min_len and len(val) < min_len:
                     return f"invalid_length_min_{min_len}_{key}"
 
-                if exact_len and len(val) != exact_len:
-                    return f"invalid_length_exact_{exact_len}_{key}"
+                if allowed_lens and len(val) not in allowed_lens:
+                    return f"invalid_length_{key}"
+
                 return None
 
             # Since user_input comes from the form, it will contain values (possibly defaults).
@@ -305,11 +294,11 @@ class ZeekrEVAPIOptionsFlowHandler(config_entries.OptionsFlow):
             if not validation_error and CONF_PASSWORD_PUBLIC_KEY in user_input:
                 validation_error = check_field(CONF_PASSWORD_PUBLIC_KEY, min_len=200)
             if not validation_error and CONF_PROD_SECRET in user_input:
-                validation_error = check_field(CONF_PROD_SECRET, exact_len=32)
+                validation_error = check_field(CONF_PROD_SECRET, allowed_lens={32, 40})
             if not validation_error and CONF_VIN_KEY in user_input:
-                validation_error = check_field(CONF_VIN_KEY, exact_len=16)
+                validation_error = check_field(CONF_VIN_KEY, allowed_lens={16, 32})
             if not validation_error and CONF_VIN_IV in user_input:
-                validation_error = check_field(CONF_VIN_IV, exact_len=16)
+                validation_error = check_field(CONF_VIN_IV, allowed_lens={16, 32})
 
             if validation_error:
                 errors["base"] = validation_error
