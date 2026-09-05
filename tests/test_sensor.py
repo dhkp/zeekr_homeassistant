@@ -81,6 +81,21 @@ def test_numeric_sensor_rejects_non_finite_values(value):
     assert sensor.native_value is None
 
 
+@pytest.mark.parametrize("value", [True, False])
+def test_numeric_sensor_rejects_boolean_values(value):
+    coordinator = DummyCoordinator({"VIN1": {"value": value}})
+    sensor = ZeekrSensor(
+        coordinator,
+        "VIN1",
+        "numeric",
+        "Numeric",
+        lambda data: data["value"],
+        numeric=True,
+    )
+
+    assert sensor.native_value is None
+
+
 def test_timestamp_sensor_reports_source_staleness():
     old = datetime.now(timezone.utc) - timedelta(hours=3)
     coordinator = DummyCoordinator({"VIN1": {"updated": old}})

@@ -42,7 +42,7 @@ _SOURCE_STALE_AFTER_SECONDS = 2 * 60 * 60
 
 def _number_or_none(value) -> float | None:
     """Convert a finite API numeric value to a Home Assistant number."""
-    if value is None or value == "":
+    if value is None or value == "" or isinstance(value, bool):
         return None
     try:
         number = float(value)
