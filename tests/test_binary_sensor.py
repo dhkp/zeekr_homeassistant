@@ -61,8 +61,8 @@ def test_charging_status_true_false():
     assert bs.is_on is False
 
 
-def test_plugged_in_prefers_explicit_boolean_over_connection_enum():
-    """The direct API boolean wins when merged endpoint fields disagree."""
+def test_plugged_in_combines_positive_signals_when_endpoints_disagree():
+    """A positive connection enum wins over a stale false direct flag."""
     data = {
         "additionalVehicleStatus": {
             "electricVehicleStatus": {
@@ -71,9 +71,11 @@ def test_plugged_in_prefers_explicit_boolean_over_connection_enum():
             }
         }
     }
-    assert _is_plugged_in(data) is False
-    data["additionalVehicleStatus"]["electricVehicleStatus"]["isPluggedIn"] = True
     assert _is_plugged_in(data) is True
+    data["additionalVehicleStatus"]["electricVehicleStatus"][
+        "statusOfChargerConnection"
+    ] = "0"
+    assert _is_plugged_in(data) is False
 
 
 def test_plugged_in_falls_back_for_legacy_payloads():
@@ -86,13 +88,13 @@ def test_plugged_in_falls_back_for_legacy_payloads():
     assert _is_plugged_in({}) is None
 
 
-def test_charging_prefers_explicit_boolean_and_falls_back_to_enum():
+def test_charging_combines_positive_signals_and_falls_back_to_enum():
     ev = {"isCharging": False, "chargerState": "2"}
     data = {"additionalVehicleStatus": {"electricVehicleStatus": ev}}
-    assert _is_charging(data) is False
-    ev.pop("isCharging")
     assert _is_charging(data) is True
     ev["chargerState"] = "26"
+    assert _is_charging(data) is False
+    ev.pop("isCharging")
     assert _is_charging(data) is False
     assert _is_charging({}) is None
 

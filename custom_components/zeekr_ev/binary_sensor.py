@@ -42,33 +42,39 @@ def _electric_vehicle_status(data: dict) -> dict:
 
 
 def _is_plugged_in(data: dict) -> bool | None:
-    """Return the authoritative plug state, with legacy payload fallback."""
+    """Reconcile plug state across API fields, preferring any positive signal."""
     status = _electric_vehicle_status(data)
     explicit = _explicit_bool(status.get("isPluggedIn"))
-    if explicit is not None:
-        return explicit
     connection = status.get("statusOfChargerConnection")
-    if connection is None:
-        return None
-    try:
-        return int(connection) != 0
-    except (TypeError, ValueError):
-        return None
+    fallback = None
+    if connection is not None:
+        try:
+            fallback = int(connection) != 0
+        except (TypeError, ValueError):
+            pass
+    if explicit is True or fallback is True:
+        return True
+    if explicit is False or fallback is False:
+        return False
+    return None
 
 
 def _is_charging(data: dict) -> bool | None:
-    """Return the authoritative charging state, with enum fallback."""
+    """Reconcile charging state across API fields, preferring positive signals."""
     status = _electric_vehicle_status(data)
     explicit = _explicit_bool(status.get("isCharging"))
-    if explicit is not None:
-        return explicit
     charger_state = status.get("chargerState")
-    if charger_state is None:
-        return None
-    try:
-        return int(charger_state) in {1, 2, 15}
-    except (TypeError, ValueError):
-        return None
+    fallback = None
+    if charger_state is not None:
+        try:
+            fallback = int(charger_state) in {1, 2, 15}
+        except (TypeError, ValueError):
+            pass
+    if explicit is True or fallback is True:
+        return True
+    if explicit is False or fallback is False:
+        return False
+    return None
 
 
 class ZeekrBinarySensor(CoordinatorEntity, BinarySensorEntity):
