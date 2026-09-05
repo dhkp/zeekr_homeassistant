@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import importlib
 import json
-import logging
+from datetime import datetime, timezone
+from math import isfinite
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -24,7 +24,6 @@ from homeassistant.const import (
     UnitOfTime,
 )
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -32,14 +31,35 @@ from .const import DOMAIN, CONF_DRIVE_SIDE, DRIVE_SIDE_LHD, DRIVE_SIDE_RHD
 from .coordinator import ZeekrCoordinator
 from .utils import get_api_version
 
-_LOGGER = logging.getLogger(__name__)
-
 # Home Assistant refuses to store state attributes larger than 16384 bytes
 # ("Attributes will not be stored" + a DB-performance warning). A full
 # journey-log page (up to 50 trips) can exceed that, so the Journey Log sensor
 # includes only the most-recent trips that fit within this safe budget (headroom
 # left for the wrapper keys + HA's own serialization overhead).
 _JOURNEY_LOG_ATTR_BUDGET = 14000
+_SOURCE_STALE_AFTER_SECONDS = 2 * 60 * 60
+
+
+def _number_or_none(value) -> float | None:
+    """Convert a finite API numeric value to a Home Assistant number."""
+    if value is None or value == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if isfinite(number) else None
+
+
+def _timestamp_from_milliseconds(value) -> datetime | None:
+    """Convert an API epoch-millisecond timestamp to UTC."""
+    number = _number_or_none(value)
+    if number is None or number <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(number / 1000, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def _latest_journey_trip(data: dict) -> dict:
@@ -89,28 +109,12 @@ def get_tire_position_label(api_position: str, drive_side: str) -> str:
     return api_position
 
 
-# Import the encryption function dynamically (try pip first, then local)
-zeekr_app_sig_module = None
-try:
-    zeekr_app_sig_module = importlib.import_module("zeekr_ev_api.zeekr_app_sig")
-except ImportError:
-    try:
-        zeekr_app_sig_module = importlib.import_module(
-            "custom_components.zeekr_ev_api.zeekr_app_sig"
-        )
-    except ImportError:
-        _LOGGER.error("Could not import zeekr_app_sig. X-VIN generation will be unavailable.")
-
-
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the sensor platform."""
-    if zeekr_app_sig_module is None:
-        raise ConfigEntryNotReady("Missing required dependency: zeekr_app_sig")
-
     coordinator: ZeekrCoordinator = hass.data[DOMAIN][entry.entry_id]
 
     entities: list[SensorEntity] = []
@@ -174,6 +178,7 @@ async def async_setup_entry(
                 .get("chargeLevel"),
                 PERCENTAGE,
                 SensorDeviceClass.BATTERY,
+                numeric=True,
             )
         )
         # Range (Battery Only)
@@ -188,6 +193,7 @@ async def async_setup_entry(
                 .get("distanceToEmptyOnBatteryOnly"),
                 UnitOfLength.KILOMETERS,
                 SensorDeviceClass.DISTANCE,
+                numeric=True,
             )
         )
         # Odometer
@@ -203,6 +209,7 @@ async def async_setup_entry(
                 UnitOfLength.KILOMETERS,
                 SensorDeviceClass.DISTANCE,
                 SensorStateClass.TOTAL_INCREASING,
+                numeric=True,
             )
         )
         # Interior Temperature
@@ -217,8 +224,160 @@ async def async_setup_entry(
                 .get("interiorTemp"),
                 UnitOfTemperature.CELSIUS,
                 SensorDeviceClass.TEMPERATURE,
+                numeric=True,
             )
         )
+
+        # Zeekr X telemetry that is populated but was previously not exposed.
+        entities.extend(
+            [
+                ZeekrSensor(
+                    coordinator,
+                    vin,
+                    "trip_1_distance",
+                    "Trip 1 Distance",
+                    lambda d: d.get("additionalVehicleStatus", {})
+                    .get("runningStatus", {})
+                    .get("tripMeter1"),
+                    UnitOfLength.KILOMETERS,
+                    SensorDeviceClass.DISTANCE,
+                    SensorStateClass.MEASUREMENT,
+                    numeric=True,
+                ),
+                ZeekrSensor(
+                    coordinator,
+                    vin,
+                    "distance_to_service",
+                    "Distance to Service",
+                    lambda d: d.get("additionalVehicleStatus", {})
+                    .get("maintenanceStatus", {})
+                    .get("distanceToService"),
+                    UnitOfLength.KILOMETERS,
+                    SensorDeviceClass.DISTANCE,
+                    numeric=True,
+                ),
+                ZeekrSensor(
+                    coordinator,
+                    vin,
+                    "days_to_service",
+                    "Days to Service",
+                    lambda d: d.get("additionalVehicleStatus", {})
+                    .get("maintenanceStatus", {})
+                    .get("daysToService"),
+                    UnitOfTime.DAYS,
+                    SensorDeviceClass.DURATION,
+                    numeric=True,
+                ),
+                ZeekrSensor(
+                    coordinator,
+                    vin,
+                    "battery_12v_voltage",
+                    "12 V Battery Voltage",
+                    lambda d: d.get("additionalVehicleStatus", {})
+                    .get("maintenanceStatus", {})
+                    .get("mainBatteryStatus", {})
+                    .get("voltage"),
+                    UnitOfElectricPotential.VOLT,
+                    SensorDeviceClass.VOLTAGE,
+                    numeric=True,
+                ),
+                ZeekrSensor(
+                    coordinator,
+                    vin,
+                    "vehicle_speed",
+                    "Vehicle Speed",
+                    lambda d: d.get("basicVehicleStatus", {}).get("speed"),
+                    UnitOfSpeed.KILOMETERS_PER_HOUR,
+                    SensorDeviceClass.SPEED,
+                    numeric=True,
+                ),
+                ZeekrSensor(
+                    coordinator,
+                    vin,
+                    "data_last_updated",
+                    "Data Last Updated",
+                    lambda d: _timestamp_from_milliseconds(d.get("updateTime")),
+                    None,
+                    SensorDeviceClass.TIMESTAMP,
+                    None,
+                ),
+            ]
+        )
+
+        timestamp_sources = (
+            (
+                "climate_data_last_updated",
+                "Climate Data Last Updated",
+                lambda d: d.get("additionalVehicleStatus", {})
+                .get("climateStatus", {})
+                .get("updateTime"),
+            ),
+            (
+                "charging_data_last_updated",
+                "Charging Data Last Updated",
+                lambda d: d.get("chargingStatus", {}).get("updateTime"),
+            ),
+            (
+                "charge_plan_last_updated",
+                "Charge Plan Last Updated",
+                lambda d: d.get("chargePlan", {}).get("updateTime"),
+            ),
+            (
+                "travel_plan_last_updated",
+                "Travel Plan Last Updated",
+                lambda d: d.get("travelPlan", {}).get("updateTime"),
+            ),
+        )
+        for key, label, value_fn in timestamp_sources:
+            if value_fn(data) is None:
+                continue
+            entities.append(
+                ZeekrSensor(
+                    coordinator,
+                    vin,
+                    key,
+                    label,
+                    lambda d, fn=value_fn: _timestamp_from_milliseconds(fn(d)),
+                    None,
+                    SensorDeviceClass.TIMESTAMP,
+                    None,
+                )
+            )
+
+        optional_statuses = (
+            (
+                "cabin_overheat_protection_state",
+                "Cabin Overheat Protection State",
+                "overheatState",
+            ),
+            (
+                "parking_comfort_state",
+                "Parking Comfort State",
+                "parkingComfortState",
+            ),
+        )
+        remote_state = data.get("additionalVehicleStatus", {}).get(
+            "remoteControlState", {}
+        )
+        for key, label, source_key in optional_statuses:
+            if remote_state.get(source_key) is None:
+                continue
+            entities.append(
+                ZeekrSensor(
+                    coordinator,
+                    vin,
+                    key,
+                    label,
+                    lambda d, source=source_key: d.get(
+                        "additionalVehicleStatus", {}
+                    )
+                    .get("remoteControlState", {})
+                    .get(source),
+                    None,
+                    None,
+                    None,
+                )
+            )
 
         # Trip 2 Sensors
         # Trip 2 Distance
@@ -286,6 +445,7 @@ async def async_setup_entry(
                     .get(f"tyreStatus{t}"),
                     UnitOfPressure.KPA,
                     SensorDeviceClass.PRESSURE,
+                    numeric=True,
                 )
             )
             entities.append(
@@ -299,36 +459,10 @@ async def async_setup_entry(
                     .get(f"tyreTemp{t}"),
                     UnitOfTemperature.CELSIUS,
                     SensorDeviceClass.TEMPERATURE,
+                    numeric=True,
                 )
             )
 
-        # BMS diagnostic sensors (raw API values from Zeekr Connected API)
-        entities.append(
-            ZeekrSensor(
-                coordinator,
-                vin,
-                "distance_to_empty_on_battery_20_soc",
-                "distanceToEmptyOnBattery20Soc",
-                lambda d: d.get("additionalVehicleStatus", {})
-                .get("electricVehicleStatus", {})
-                .get("distanceToEmptyOnBattery20Soc"),
-                UnitOfLength.KILOMETERS,
-                SensorDeviceClass.DISTANCE,
-            )
-        )
-        entities.append(
-            ZeekrSensor(
-                coordinator,
-                vin,
-                "distance_to_empty_on_battery_100_soc",
-                "distanceToEmptyOnBattery100Soc",
-                lambda d: d.get("additionalVehicleStatus", {})
-                .get("electricVehicleStatus", {})
-                .get("distanceToEmptyOnBattery100Soc"),
-                UnitOfLength.KILOMETERS,
-                SensorDeviceClass.DISTANCE,
-            )
-        )
         # Charging Status Sensors (only when charging)
         if data.get("chargingStatus"):
             # Charge Voltage
@@ -341,6 +475,7 @@ async def async_setup_entry(
                     lambda d: d.get("chargingStatus", {}).get("chargeVoltage"),
                     UnitOfElectricPotential.VOLT,
                     SensorDeviceClass.VOLTAGE,
+                    numeric=True,
                 )
             )
             # Charge Current
@@ -353,6 +488,7 @@ async def async_setup_entry(
                     lambda d: d.get("chargingStatus", {}).get("chargeCurrent"),
                     UnitOfElectricCurrent.AMPERE,
                     SensorDeviceClass.CURRENT,
+                    numeric=True,
                 )
             )
             # Charge Power
@@ -365,6 +501,7 @@ async def async_setup_entry(
                     lambda d: d.get("chargingStatus", {}).get("chargePower"),
                     UnitOfPower.KILO_WATT,
                     SensorDeviceClass.POWER,
+                    numeric=True,
                 )
             )
             # Charge Speed
@@ -377,6 +514,7 @@ async def async_setup_entry(
                     lambda d: d.get("chargingStatus", {}).get("chargeSpeed"),
                     "km/h",
                     None,
+                    numeric=True,
                 )
             )
 
@@ -496,6 +634,8 @@ class ZeekrSensor(CoordinatorEntity, SensorEntity):
         unit: str | None = None,
         device_class: SensorDeviceClass | None = None,
         state_class: SensorStateClass | None = SensorStateClass.MEASUREMENT,
+        *,
+        numeric: bool = False,
     ) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator)
@@ -504,6 +644,7 @@ class ZeekrSensor(CoordinatorEntity, SensorEntity):
         self._attr_name = name
         self._attr_unique_id = f"{vin}_{key}"
         self._value_fn = value_fn
+        self._numeric = numeric
         self._attr_native_unit_of_measurement = unit
         self._attr_device_class = device_class
         self._attr_state_class = state_class
@@ -514,7 +655,25 @@ class ZeekrSensor(CoordinatorEntity, SensorEntity):
         data = self.coordinator.data.get(self.vin, {})
         if not data:
             return None
-        return self._value_fn(data)
+        value = self._value_fn(data)
+        return _number_or_none(value) if self._numeric else value
+
+    @property
+    def extra_state_attributes(self):
+        """Expose age and staleness for source timestamp sensors."""
+        value = self.native_value
+        if self._attr_device_class != SensorDeviceClass.TIMESTAMP or not isinstance(
+            value, datetime
+        ):
+            return None
+        age_seconds = max(
+            0,
+            int((datetime.now(timezone.utc) - value).total_seconds()),
+        )
+        return {
+            "source_age_seconds": age_seconds,
+            "source_data_stale": age_seconds >= _SOURCE_STALE_AFTER_SECONDS,
+        }
 
     @property
     def device_info(self):
@@ -566,7 +725,6 @@ class ZeekrAPIStatusSensor(CoordinatorEntity, SensorEntity):
         client = self.coordinator.client
         if client:
             attrs["logged_in"] = client.logged_in
-            attrs["username"] = getattr(client, "username", None)
             attrs["region_code"] = getattr(client, "region_code", None)
             attrs["app_server_host"] = getattr(client, "app_server_host", None)
             attrs["usercenter_host"] = getattr(client, "usercenter_host", None)
@@ -574,19 +732,6 @@ class ZeekrAPIStatusSensor(CoordinatorEntity, SensorEntity):
             attrs["vehicle_count"] = (
                 len(self.coordinator.vehicles) if self.coordinator.vehicles else 0
             )
-            # Include X-VIN (encrypted VIN) for each vehicle
-            if self.coordinator.vehicles and zeekr_app_sig_module:
-                try:
-                    x_vins = {}
-                    for vehicle in self.coordinator.vehicles:
-                        vin = vehicle.vin
-                        encrypted_vin = zeekr_app_sig_module.aes_encrypt(
-                            vin, client.vin_key, client.vin_iv
-                        )
-                        x_vins[vin] = encrypted_vin
-                    attrs["x_vins"] = x_vins
-                except Exception as e:
-                    _LOGGER.error("Failed to generate X-VIN: %s", e)
         return attrs
 
 

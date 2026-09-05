@@ -70,7 +70,27 @@ class ZeekrClimate(CoordinatorEntity, ClimateEntity):
         super().__init__(coordinator)
         self.vin = vin
         self._attr_unique_id = f"{vin}_climate"
-        self._target_temperature = 20.0  # Default since vehicle doesn't report setpoint
+        self._target_temperature: float | None = None
+        self._reported_target_at_command: float | None = None
+        self._target_temperature_was_sent = False
+
+    def _reported_target_temperature(self) -> float | None:
+        """Return the valid target temperature reported by the API."""
+        try:
+            value = (
+                self.coordinator.data.get(self.vin, {})
+                .get("additionalVehicleStatus", {})
+                .get("climateStatus", {})
+                .get("crSetTemp")
+            )
+            if value in (None, ""):
+                return None
+            temperature = float(value)
+            if not isfinite(temperature) or not self.min_temp <= temperature <= self.max_temp:
+                return None
+            return temperature
+        except (AttributeError, TypeError, ValueError):
+            return None
 
     @property
     def current_temperature(self) -> float | None:
@@ -88,8 +108,33 @@ class ZeekrClimate(CoordinatorEntity, ClimateEntity):
 
     @property
     def target_temperature(self) -> float | None:
-        """Return the temperature we try to reach."""
-        return self._target_temperature
+        """Return the optimistic target until a new API value is reported."""
+        reported = self._reported_target_temperature()
+        if self._target_temperature is not None:
+            if (
+                self._target_temperature_was_sent
+                and reported is not None
+                and reported != self._reported_target_at_command
+            ):
+                self._target_temperature = None
+                self._reported_target_at_command = None
+                self._target_temperature_was_sent = False
+            else:
+                return self._target_temperature
+        return reported
+
+    def _handle_coordinator_update(self) -> None:
+        """Let an authoritative reported target supersede local optimism."""
+        reported = self._reported_target_temperature()
+        if (
+            self._target_temperature is not None
+            and self._target_temperature_was_sent
+            and reported is not None
+        ):
+            self._target_temperature = None
+            self._reported_target_at_command = None
+            self._target_temperature_was_sent = False
+        super()._handle_coordinator_update()
 
     @property
     def hvac_mode(self) -> HVACMode:
@@ -117,10 +162,14 @@ class ZeekrClimate(CoordinatorEntity, ClimateEntity):
         command = "start"
         service_id = "ZAF"
         setting = None
+        target_temperature = None
 
         if hvac_mode == HVACMode.HEAT_COOL:
             # Turn ON
             duration = getattr(self.coordinator, "ac_duration", 15)
+            target_temperature = self.target_temperature
+            if target_temperature is None:
+                target_temperature = 20.0
             setting = {
                 "serviceParameters": [
                     {
@@ -129,7 +178,7 @@ class ZeekrClimate(CoordinatorEntity, ClimateEntity):
                     },
                     {
                         "key": "AC.temp",
-                        "value": str(self._target_temperature)
+                        "value": str(target_temperature)
                     },
                     {
                         "key": "AC.duration",
@@ -155,7 +204,7 @@ class ZeekrClimate(CoordinatorEntity, ClimateEntity):
             )
 
             # Optimistic update
-            self._update_local_state_optimistically(hvac_mode)
+            self._update_local_state_optimistically(hvac_mode, target_temperature)
             self.async_write_ha_state()
 
             # delayed refresh
@@ -164,7 +213,11 @@ class ZeekrClimate(CoordinatorEntity, ClimateEntity):
                 await self.coordinator.async_request_refresh()
             self.hass.async_create_task(delayed_refresh())
 
-    def _update_local_state_optimistically(self, hvac_mode: HVACMode) -> None:
+    def _update_local_state_optimistically(
+        self,
+        hvac_mode: HVACMode,
+        target_temperature: float | None,
+    ) -> None:
         """Update the coordinator data to reflect the change immediately."""
         data = self.coordinator.data.get(self.vin)
         if not data:
@@ -177,6 +230,9 @@ class ZeekrClimate(CoordinatorEntity, ClimateEntity):
 
         if hvac_mode == HVACMode.HEAT_COOL:
             climate_status["preClimateActive"] = "1"
+            self._reported_target_at_command = self._reported_target_temperature()
+            self._target_temperature = target_temperature
+            self._target_temperature_was_sent = True
         else:
             climate_status["preClimateActive"] = "0"
 
@@ -185,7 +241,9 @@ class ZeekrClimate(CoordinatorEntity, ClimateEntity):
         if (temp := kwargs.get("temperature")) is None:
             return
 
+        self._reported_target_at_command = self._reported_target_temperature()
         self._target_temperature = temp
+        self._target_temperature_was_sent = False
 
         # If currently running, update the temp by sending the command again
         if self.hvac_mode == HVACMode.HEAT_COOL:

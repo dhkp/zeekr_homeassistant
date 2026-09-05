@@ -5,10 +5,10 @@ This is a custom integration for Zeekr Electric Vehicles for Home Assistant. It 
 ## Features
 
 - **Climate**: Control Heating / Cooling Vents & Seats and Steering Wheel.
-- **Sensors**: Battery Level, Range, Odometer, Interior Temperature, Tire Pressures, Charging Power, Voltage, Speed.
-- **Binary Sensors**: Charging Status, Plugged In Status, Doors, Tyre Warnings.
+- **Sensors**: Battery, range, odometer, Trip 1/2, service interval, 12 V battery voltage, speed, tire telemetry, charging telemetry, and per-endpoint data timestamps with staleness attributes.
+- **Binary Sensors**: Charging and plugged-in status from the API's explicit booleans, doors, electric parking brake, and tyre warnings.
 - **Buttons**: Flash blinkers, ventilate windows, enable/disable Sentry Mode.
-- **Locks**: Door and Trunk Lock.
+- **Locks**: Central locking, trunk, and charge lid controls.
 - **Device Tracker**: Location tracking.
 
 ## Installation

@@ -237,14 +237,20 @@ async def test_lock_device_info(hass):
 
 
 @pytest.mark.asyncio
-async def test_lock_async_setup_entry(hass, mock_config_entry):
+async def test_lock_async_setup_entry():
     coordinator = MockCoordinator({"VIN1": {}})
-    hass.data[DOMAIN] = {mock_config_entry.entry_id: coordinator}
+    hass = MagicMock()
+    entry = MagicMock()
+    entry.entry_id = "entry-1"
+    hass.data = {DOMAIN: {entry.entry_id: coordinator}}
 
     async_add_entities = MagicMock()
 
-    await async_setup_entry(hass, mock_config_entry, async_add_entities)
+    await async_setup_entry(hass, entry, async_add_entities)
 
-    assert async_add_entities.called
-    assert len(async_add_entities.call_args[0][0]) > 0
-    assert isinstance(async_add_entities.call_args[0][0][0], ZeekrLock)
+    entities = async_add_entities.call_args[0][0]
+    assert {entity.field for entity in entities} == {
+        "centralLockingStatus",
+        "trunkLockStatus",
+        "chargeLidDcAcStatus",
+    }

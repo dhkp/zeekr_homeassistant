@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from numbers import Number
+
 from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
     BinarySensorEntity,
@@ -13,6 +15,60 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, CONF_DRIVE_SIDE, DRIVE_SIDE_LHD
 from .coordinator import ZeekrCoordinator
+
+
+def _explicit_bool(value) -> bool | None:
+    """Normalize a boolean API value, rejecting ambiguous values."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, Number):
+        if value == 1:
+            return True
+        if value == 0:
+            return False
+        return None
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1"}:
+            return True
+        if normalized in {"false", "0"}:
+            return False
+    return None
+
+
+def _electric_vehicle_status(data: dict) -> dict:
+    """Return the electric-vehicle status subtree."""
+    return data.get("additionalVehicleStatus", {}).get("electricVehicleStatus", {})
+
+
+def _is_plugged_in(data: dict) -> bool | None:
+    """Return the authoritative plug state, with legacy payload fallback."""
+    status = _electric_vehicle_status(data)
+    explicit = _explicit_bool(status.get("isPluggedIn"))
+    if explicit is not None:
+        return explicit
+    connection = status.get("statusOfChargerConnection")
+    if connection is None:
+        return None
+    try:
+        return int(connection) != 0
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_charging(data: dict) -> bool | None:
+    """Return the authoritative charging state, with enum fallback."""
+    status = _electric_vehicle_status(data)
+    explicit = _explicit_bool(status.get("isCharging"))
+    if explicit is not None:
+        return explicit
+    charger_state = status.get("chargerState")
+    if charger_state is None:
+        return None
+    try:
+        return int(charger_state) in {1, 2, 15}
+    except (TypeError, ValueError):
+        return None
 
 
 class ZeekrBinarySensor(CoordinatorEntity, BinarySensorEntity):
@@ -73,11 +129,7 @@ async def async_setup_entry(
                 vin,
                 "charging_status",
                 "Charging Status",
-                lambda d: int(
-                    d.get("additionalVehicleStatus", {})
-                    .get("electricVehicleStatus", {})
-                    .get("chargerState", "0")
-                ) in [1, 2, 15],
+                _is_charging,
                 BinarySensorDeviceClass.BATTERY_CHARGING,
             )
         )
@@ -88,11 +140,7 @@ async def async_setup_entry(
                 vin,
                 "plugged_in",
                 "Plugged In",
-                lambda d: int(
-                    d.get("additionalVehicleStatus", {})
-                    .get("electricVehicleStatus", {})
-                    .get("statusOfChargerConnection")
-                ),
+                _is_plugged_in,
                 BinarySensorDeviceClass.PLUG,
             )
         )
@@ -133,6 +181,25 @@ async def async_setup_entry(
                     BinarySensorDeviceClass.DOOR,
                 )
             )
+
+        entities.append(
+            ZeekrBinarySensor(
+                coordinator,
+                vin,
+                "electric_parking_brake_applied",
+                "Electric Parking Brake Applied",
+                lambda d: (
+                    None
+                    if (
+                        value := d.get("additionalVehicleStatus", {})
+                        .get("drivingSafetyStatus", {})
+                        .get("electricParkBrakeStatus")
+                    )
+                    is None
+                    else str(value) == "1"
+                ),
+            )
+        )
 
         # Tire Pre-Warning & Temp Warning
         from .sensor import get_tire_position_label

@@ -2,6 +2,17 @@ import asyncio
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def enable_event_loop_debug():
+    """Keep the Home Assistant test plugin compatible with Python 3.13."""
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    loop.set_debug(True)
+
+
 class DummyConfigEntries:
     async def async_forward_entry_setups(self, entry, platforms):
         return None
@@ -52,10 +63,3 @@ def mock_config_entry():
             self.unload_callbacks.append(callback)
 
     return MockConfigEntry()
-
-
-@pytest.fixture
-def event_loop():
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
