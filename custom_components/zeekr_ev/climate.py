@@ -168,8 +168,9 @@ class ZeekrClimate(CoordinatorEntity, ClimateEntity):
             # Turn ON
             duration = getattr(self.coordinator, "ac_duration", 15)
             target_temperature = self.target_temperature
-            if target_temperature is None:
-                target_temperature = 20.0
+            command_temperature = (
+                target_temperature if target_temperature is not None else 20.0
+            )
             setting = {
                 "serviceParameters": [
                     {
@@ -178,7 +179,7 @@ class ZeekrClimate(CoordinatorEntity, ClimateEntity):
                     },
                     {
                         "key": "AC.temp",
-                        "value": str(target_temperature)
+                        "value": str(command_temperature)
                     },
                     {
                         "key": "AC.duration",

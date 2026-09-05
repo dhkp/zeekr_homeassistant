@@ -226,11 +226,12 @@ async def test_unsent_target_survives_coordinator_update_while_hvac_off():
 
 
 @pytest.mark.asyncio
-async def test_starting_hvac_exposes_default_target_optimistically():
+async def test_starting_hvac_uses_unpublished_default_target():
     coordinator = MockCoordinator(
         {"VIN1": {"additionalVehicleStatus": {"climateStatus": {}}}}
     )
-    coordinator.vehicles["VIN1"] = MagicMock()
+    vehicle = MagicMock()
+    coordinator.vehicles["VIN1"] = vehicle
     climate = ZeekrClimate(coordinator, "VIN1")
     climate.hass = DummyHass()
     climate.hass.async_create_task = MagicMock()
@@ -238,7 +239,11 @@ async def test_starting_hvac_exposes_default_target_optimistically():
 
     await climate.async_set_hvac_mode(HVACMode.HEAT_COOL)
 
-    assert climate.target_temperature == 20.0
+    setting = vehicle.do_remote_control.call_args.args[2]
+    assert {item["key"]: item["value"] for item in setting["serviceParameters"]}[
+        "AC.temp"
+    ] == "20.0"
+    assert climate.target_temperature is None
     climate.hass.async_create_task.call_args.args[0].close()
 
 
