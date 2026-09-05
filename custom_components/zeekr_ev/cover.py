@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from math import isfinite
 from typing import Any
 
 from homeassistant.components.cover import (
@@ -18,6 +19,29 @@ from .const import DOMAIN
 from .coordinator import ZeekrCoordinator
 
 
+def _sunshade_position(data: dict) -> int | None:
+    """Return a validated Home Assistant sunshade position."""
+    position = (
+        data.get("additionalVehicleStatus", {})
+        .get("climateStatus", {})
+        .get("curtainPos")
+    )
+    if isinstance(position, bool):
+        return None
+    try:
+        number = float(position)
+    except (TypeError, ValueError):
+        return None
+    if not isfinite(number) or not 0 <= number <= 100:
+        return None
+    return int(number)
+
+
+def _has_valid_sunshade(data: dict) -> bool:
+    """Return whether the payload contains a usable sunshade position."""
+    return _sunshade_position(data) is not None
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -27,8 +51,9 @@ async def async_setup_entry(
     coordinator: ZeekrCoordinator = hass.data[DOMAIN][entry.entry_id]
     entities: list[CoverEntity] = []
 
-    for vin in coordinator.data:
-        entities.append(ZeekrSunshade(coordinator, vin))
+    for vin, data in coordinator.data.items():
+        if _has_valid_sunshade(data):
+            entities.append(ZeekrSunshade(coordinator, vin))
         entities.append(ZeekrWindows(coordinator, vin))
 
         # Add individual read-only windows
@@ -77,14 +102,8 @@ class ZeekrSunshade(CoordinatorEntity, CoverEntity):
         0 is closed, 100 is open.
         """
         try:
-            val = (
-                self.coordinator.data.get(self.vin, {})
-                .get("additionalVehicleStatus", {})
-                .get("climateStatus", {})
-                .get("curtainPos")
-            )
-            return int(val) if val is not None else None
-        except (ValueError, TypeError, AttributeError):
+            return _sunshade_position(self.coordinator.data.get(self.vin, {}))
+        except AttributeError:
             return None
 
     async def async_open_cover(self, **kwargs: Any) -> None:

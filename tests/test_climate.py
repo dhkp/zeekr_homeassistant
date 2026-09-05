@@ -134,11 +134,112 @@ async def test_climate_optimistic_update():
 
 
 @pytest.mark.asyncio
-async def test_climate_properties_missing_data(hass):
+async def test_climate_properties_missing_data():
     coordinator = MockCoordinator({"VIN1": {}})
     climate = ZeekrClimate(coordinator, "VIN1")
     assert climate.hvac_mode == HVACMode.OFF
     assert climate.current_temperature is None
+    assert climate.target_temperature is None
+
+
+def test_climate_uses_reported_target_temperature_when_available():
+    coordinator = MockCoordinator(
+        {
+            "VIN1": {
+                "additionalVehicleStatus": {
+                    "climateStatus": {"crSetTemp": "21.5"}
+                }
+            }
+        }
+    )
+    climate = ZeekrClimate(coordinator, "VIN1")
+    assert climate.target_temperature == 21.5
+
+    coordinator.data["VIN1"]["additionalVehicleStatus"]["climateStatus"][
+        "crSetTemp"
+    ] = "0"
+    assert climate.target_temperature is None
+
+
+@pytest.mark.asyncio
+async def test_reported_target_supersedes_optimistic_temperature_command():
+    status = {"preClimateActive": "1", "crSetTemp": "21.5"}
+    coordinator = MockCoordinator(
+        {"VIN1": {"additionalVehicleStatus": {"climateStatus": status}}}
+    )
+    coordinator.vehicles["VIN1"] = MagicMock()
+    climate = ZeekrClimate(coordinator, "VIN1")
+    climate.hass = DummyHass()
+    climate.hass.async_create_task = MagicMock()
+    climate.async_write_ha_state = MagicMock()
+
+    await climate.async_set_temperature(temperature=22.0)
+
+    assert climate.target_temperature == 22.0
+    climate._handle_coordinator_update()
+    assert climate.target_temperature == 21.5
+    climate.hass.async_create_task.call_args.args[0].close()
+
+
+@pytest.mark.parametrize("invalid_report", ["0", "nan"])
+@pytest.mark.parametrize("reconcile_via", ["property", "coordinator_update"])
+@pytest.mark.asyncio
+async def test_invalid_report_preserves_sent_optimistic_target(
+    invalid_report, reconcile_via
+):
+    status = {"preClimateActive": "1", "crSetTemp": "21.5"}
+    coordinator = MockCoordinator(
+        {"VIN1": {"additionalVehicleStatus": {"climateStatus": status}}}
+    )
+    coordinator.vehicles["VIN1"] = MagicMock()
+    climate = ZeekrClimate(coordinator, "VIN1")
+    climate.hass = DummyHass()
+    climate.hass.async_create_task = MagicMock()
+    climate.async_write_ha_state = MagicMock()
+
+    await climate.async_set_temperature(temperature=22.0)
+    try:
+        status["crSetTemp"] = invalid_report
+
+        if reconcile_via == "property":
+            assert climate.target_temperature == 22.0
+        else:
+            climate._handle_coordinator_update()
+            assert climate.target_temperature == 22.0
+    finally:
+        climate.hass.async_create_task.call_args.args[0].close()
+
+
+@pytest.mark.asyncio
+async def test_unsent_target_survives_coordinator_update_while_hvac_off():
+    status = {"preClimateActive": "0", "crSetTemp": "21.5"}
+    coordinator = MockCoordinator(
+        {"VIN1": {"additionalVehicleStatus": {"climateStatus": status}}}
+    )
+    climate = ZeekrClimate(coordinator, "VIN1")
+    climate.async_write_ha_state = MagicMock()
+
+    await climate.async_set_temperature(temperature=22.0)
+    climate._handle_coordinator_update()
+
+    assert climate.target_temperature == 22.0
+
+
+@pytest.mark.asyncio
+async def test_starting_hvac_exposes_default_target_optimistically():
+    coordinator = MockCoordinator(
+        {"VIN1": {"additionalVehicleStatus": {"climateStatus": {}}}}
+    )
+    coordinator.vehicles["VIN1"] = MagicMock()
+    climate = ZeekrClimate(coordinator, "VIN1")
+    climate.hass = DummyHass()
+    climate.hass.async_create_task = MagicMock()
+    climate.async_write_ha_state = MagicMock()
+
+    await climate.async_set_hvac_mode(HVACMode.HEAT_COOL)
+
+    assert climate.target_temperature == 20.0
+    climate.hass.async_create_task.call_args.args[0].close()
 
 
 @pytest.mark.asyncio

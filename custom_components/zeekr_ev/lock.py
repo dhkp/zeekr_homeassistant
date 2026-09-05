@@ -27,17 +27,11 @@ async def async_setup_entry(
     coordinator: ZeekrCoordinator = hass.data[DOMAIN][entry.entry_id]
     entities: list[ZeekrLock] = []
 
-    # Fields from drivingSafetyStatus or electricVehicleStatus to expose as lock-like entities
-    # Format: Key -> (Label, Category)
+    # Expose only fields with implemented lock/unlock commands. Read-only door,
+    # hood and parking-brake states belong on binary sensors instead.
     lock_fields = {
         "centralLockingStatus": ("Central locking", "drivingSafetyStatus"),
-        "doorLockStatusDriver": ("Driver door lock", "drivingSafetyStatus"),
-        "doorLockStatusPassenger": ("Passenger door lock", "drivingSafetyStatus"),
-        "doorLockStatusDriverRear": ("Driver rear door lock", "drivingSafetyStatus"),
-        "doorLockStatusPassengerRear": ("Passenger rear door lock", "drivingSafetyStatus"),
         "trunkLockStatus": ("Trunk lock", "drivingSafetyStatus"),
-        "engineHoodOpenStatus": ("Hood (closed = locked)", "drivingSafetyStatus"),
-        "electricParkBrakeStatus": ("Electric park brake", "drivingSafetyStatus"),
         "chargeLidDcAcStatus": ("Charge Lid", "electricVehicleStatus"),
     }
 

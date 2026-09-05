@@ -1,6 +1,12 @@
 from unittest.mock import MagicMock, AsyncMock
 import pytest
-from custom_components.zeekr_ev.cover import ZeekrSunshade, ZeekrWindows, ZeekrWindow, async_setup_entry
+from custom_components.zeekr_ev.cover import (
+    ZeekrSunshade,
+    ZeekrWindow,
+    ZeekrWindows,
+    _has_valid_sunshade,
+    async_setup_entry,
+)
 from custom_components.zeekr_ev.const import DOMAIN
 
 
@@ -28,6 +34,40 @@ class MockCoordinator:
 
     async def async_request_refresh(self):
         pass
+
+
+def _sunshade_payload(position):
+    return {
+        "additionalVehicleStatus": {
+            "climateStatus": {"curtainOpenStatus": "1", "curtainPos": position}
+        }
+    }
+
+
+@pytest.mark.parametrize("position", [0, 100, 50.5, "50.5"])
+def test_sunshade_accepts_finite_positions_in_inclusive_range(position):
+    assert _has_valid_sunshade(_sunshade_payload(position)) is True
+
+
+@pytest.mark.parametrize(
+    "position",
+    [None, True, False, -0.5, 100.9, float("nan"), float("inf"), float("-inf")],
+)
+def test_sunshade_rejects_non_real_non_finite_and_out_of_range_positions(position):
+    assert _has_valid_sunshade(_sunshade_payload(position)) is False
+
+
+def test_sunshade_rejects_missing_position():
+    assert _has_valid_sunshade({}) is False
+
+
+def test_sunshade_accepted_fractional_string_has_valid_position():
+    vin = "VIN1"
+    payload = _sunshade_payload("50.5")
+    coordinator = MockCoordinator({vin: payload})
+
+    assert _has_valid_sunshade(payload) is True
+    assert ZeekrSunshade(coordinator, vin).current_cover_position == 50
 
 
 @pytest.mark.asyncio
@@ -110,11 +150,11 @@ async def test_cover_async_setup_entry(hass, mock_config_entry):
     await async_setup_entry(hass, mock_config_entry, async_add_entities)
 
     assert async_add_entities.called
-    # Sunshade + All Windows + 4 Individual Windows = 6
-    assert len(async_add_entities.call_args[0][0]) == 6
+    # All Windows + 4 Individual Windows; no sunshade without valid telemetry.
+    assert len(async_add_entities.call_args[0][0]) == 5
     entities = async_add_entities.call_args[0][0]
-    assert isinstance(entities[0], ZeekrSunshade)
-    assert isinstance(entities[1], ZeekrWindows)
+    assert not any(isinstance(entity, ZeekrSunshade) for entity in entities)
+    assert isinstance(entities[0], ZeekrWindows)
     assert isinstance(entities[2], ZeekrWindow)
 
 

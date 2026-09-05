@@ -1,14 +1,22 @@
-from custom_components.zeekr_ev.sensor import (
-    ZeekrSensor,
-    ZeekrAPIStatusSensor,
-    ZeekrVehicleStatusSensor,
-    ZeekrEngineStatusSensor,
-    ZeekrChargingTimeFormattedSensor,
-    ZeekrJourneyLogSensor,
-    _latest_journey_trip,
-    _journey_last_duration,
-)
 import json
+from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock
+
+import pytest
+from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
+
+from custom_components.zeekr_ev.const import DOMAIN
+from custom_components.zeekr_ev.sensor import (
+    ZeekrAPIStatusSensor,
+    ZeekrChargingTimeFormattedSensor,
+    ZeekrEngineStatusSensor,
+    ZeekrJourneyLogSensor,
+    ZeekrSensor,
+    ZeekrVehicleStatusSensor,
+    _journey_last_duration,
+    _latest_journey_trip,
+    async_setup_entry,
+)
 
 
 class DummyCoordinator:
@@ -38,6 +46,57 @@ def test_native_value_returns_value():
         "%",
     )
     assert s.native_value == 42
+
+
+def test_numeric_sensor_converts_api_strings_and_rejects_sentinels():
+    coordinator = DummyCoordinator({"VIN1": {"value": "13.15"}})
+    sensor = ZeekrSensor(
+        coordinator,
+        "VIN1",
+        "numeric",
+        "Numeric",
+        lambda data: data["value"],
+        "V",
+        numeric=True,
+    )
+    assert sensor.native_value == 13.15
+    coordinator.data["VIN1"]["value"] = ""
+    assert sensor.native_value is None
+    coordinator.data["VIN1"]["value"] = "not-a-number"
+    assert sensor.native_value is None
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+def test_numeric_sensor_rejects_non_finite_values(value):
+    coordinator = DummyCoordinator({"VIN1": {"value": value}})
+    sensor = ZeekrSensor(
+        coordinator,
+        "VIN1",
+        "numeric",
+        "Numeric",
+        lambda data: data["value"],
+        numeric=True,
+    )
+
+    assert sensor.native_value is None
+
+
+def test_timestamp_sensor_reports_source_staleness():
+    old = datetime.now(timezone.utc) - timedelta(hours=3)
+    coordinator = DummyCoordinator({"VIN1": {"updated": old}})
+    sensor = ZeekrSensor(
+        coordinator,
+        "VIN1",
+        "updated",
+        "Updated",
+        lambda data: data["updated"],
+        None,
+        SensorDeviceClass.TIMESTAMP,
+        None,
+    )
+    attributes = sensor.extra_state_attributes
+    assert attributes["source_data_stale"] is True
+    assert attributes["source_age_seconds"] >= 3 * 60 * 60
 
 
 def test_charging_voltage_sensor():
@@ -186,6 +245,96 @@ def test_window_sensors():
             "%",
         )
         assert s.native_value == pos
+
+
+@pytest.mark.asyncio
+async def test_setup_adds_zeekr_x_telemetry_and_freshness_sensors():
+    data = {
+        "VIN1": {
+            "updateTime": 1788582040345,
+            "basicVehicleStatus": {"speed": "0"},
+            "chargingStatus": {
+                "chargeVoltage": "230.5",
+                "chargeCurrent": "15.8",
+                "chargePower": "3.6",
+                "chargeSpeed": "22.4",
+                "updateTime": 1788582040345,
+            },
+            "chargePlan": {"updateTime": 1788533152908},
+            "travelPlan": {"updateTime": 1788533152994},
+            "additionalVehicleStatus": {
+                "electricVehicleStatus": {
+                    "chargeLevel": "100.0",
+                    "distanceToEmptyOnBatteryOnly": "333",
+                },
+                "climateStatus": {
+                    "interiorTemp": "16.3",
+                    "updateTime": 1788582040345,
+                },
+                "runningStatus": {"tripMeter1": "9850.6"},
+                "remoteControlState": {
+                    "overheatState": "1",
+                    "parkingComfortState": "1",
+                },
+                "maintenanceStatus": {
+                    "odometer": "17134",
+                    "tyreStatusDriver": "258",
+                    "tyreTempDriver": "20",
+                    "distanceToService": 22879,
+                    "daysToService": 489,
+                    "mainBatteryStatus": {"voltage": 13.15},
+                },
+            },
+        }
+    }
+    coordinator = DummyCoordinator(data)
+    coordinator.client = MagicMock()
+    coordinator.vehicles = []
+    coordinator.request_stats = None
+    entry = MagicMock()
+    entry.entry_id = "entry-1"
+    entry.data = {}
+    hass = MagicMock()
+    hass.data = {DOMAIN: {entry.entry_id: coordinator}}
+    add_entities = MagicMock()
+
+    await async_setup_entry(hass, entry, add_entities)
+
+    entities = {
+        entity.key: entity
+        for entity in add_entities.call_args[0][0]
+        if isinstance(entity, ZeekrSensor)
+    }
+    assert entities["trip_1_distance"].native_value == 9850.6
+    assert entities["trip_1_distance"].state_class == SensorStateClass.MEASUREMENT
+    assert entities["distance_to_service"].native_value == 22879
+    assert entities["days_to_service"].native_value == 489
+    assert entities["battery_12v_voltage"].native_value == 13.15
+    assert entities["vehicle_speed"].native_value == 0
+    assert entities["cabin_overheat_protection_state"].native_value == "1"
+    assert entities["parking_comfort_state"].native_value == "1"
+    assert entities["battery_level"].native_value == 100.0
+    assert entities["range"].native_value == 333.0
+    assert entities["interior_temp"].native_value == 16.3
+    assert entities["odometer"].native_value == 17134.0
+    assert entities["tire_pressure_driver"].native_value == 258.0
+    assert entities["tire_temperature_driver"].native_value == 20.0
+    assert entities["charge_voltage"].native_value == 230.5
+    assert entities["charge_current"].native_value == 15.8
+    assert entities["charge_power"].native_value == 3.6
+    assert entities["charge_speed"].native_value == 22.4
+    assert "distance_to_empty_on_battery_20_soc" not in entities
+    assert "distance_to_empty_on_battery_100_soc" not in entities
+    assert {
+        "data_last_updated",
+        "climate_data_last_updated",
+        "charging_data_last_updated",
+        "charge_plan_last_updated",
+        "travel_plan_last_updated",
+    } <= entities.keys()
+    assert entities["data_last_updated"].native_value == datetime(
+        2026, 9, 5, 4, 20, 40, 345000, tzinfo=timezone.utc
+    )
 
 
 def test_vehicle_status_sensor():
@@ -356,6 +505,56 @@ def test_api_status_sensor_connected():
     coordinator = MockCoordinator()
     sensor = ZeekrAPIStatusSensor(coordinator, "entry_1")
     assert sensor.native_value == "Connected"
+
+
+def test_api_status_attributes_do_not_expose_credentials_or_vehicle_ids(monkeypatch):
+    """API status attributes expose operational metadata only."""
+    import custom_components.zeekr_ev.sensor as sensor_module
+
+    username = "privacy-test-user@example.invalid"
+    raw_vin = "FAKEVIN-PRIVACY-123"
+    encrypted_vin = "fake-encrypted-vin-private"
+    auth_token = "fake-auth-token-private"
+    bearer_token = "fake-bearer-token-private"
+    vin_key = "fake-vin-key-private"
+    vin_iv = "fake-vin-iv-private"
+    fake_sig = MagicMock()
+    fake_sig.aes_encrypt.return_value = encrypted_vin
+    monkeypatch.setattr(sensor_module, "zeekr_app_sig_module", fake_sig, raising=False)
+
+    client = MagicMock(
+        logged_in=True,
+        username=username,
+        auth_token=auth_token,
+        bearer_token=bearer_token,
+        region_code="EU",
+        app_server_host="api.example.invalid",
+        usercenter_host="user.example.invalid",
+        vin_key=vin_key,
+        vin_iv=vin_iv,
+    )
+    coordinator = MagicMock(client=client, vehicles=[MagicMock(vin=raw_vin)])
+
+    attrs = ZeekrAPIStatusSensor(coordinator, "entry_1").extra_state_attributes
+
+    assert set(attrs) == {
+        "logged_in",
+        "region_code",
+        "app_server_host",
+        "usercenter_host",
+        "vehicle_count",
+    }
+    serialized = json.dumps(attrs, sort_keys=True)
+    for sensitive_value in (
+        username,
+        raw_vin,
+        encrypted_vin,
+        auth_token,
+        bearer_token,
+        vin_key,
+        vin_iv,
+    ):
+        assert sensitive_value not in serialized
 
 
 def test_api_status_sensor_disconnected():
